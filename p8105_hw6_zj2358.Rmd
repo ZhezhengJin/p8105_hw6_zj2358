@@ -9,6 +9,8 @@ output: github_document
 library(tidyverse)
 library(knitr)
 library(janitor)
+library(readxl)
+library(broom)
 
 opts_chunk$set(
 	echo = TRUE,
@@ -28,3 +30,117 @@ options(
 scale_colour_discrete = scale_colour_viridis_d
 scale_fill_discrete = scale_fill_viridis_d
 ```
+
+## Problem 1
+
+#### Data import
+```{r message=F}
+homicide <- read_csv("./data_file/homicide-data.csv")
+
+homicide
+```
+
+#### Data wrangling
+```{r}
+homicide_clean <- homicide %>%
+  # Create city_state variable
+  mutate(city_state = paste(city, state, sep = ", ")) %>%
+  # Omit specified cities
+  filter(!(city_state %in% c("Dallas, TX", "Phoenix, AZ", "Kansas City, MO", "Tulsa, AL"))) %>%
+  # Limit analysis to white or black victim race
+  filter(victim_race %in% c("White", "Black")) %>%
+  # Create is_solved binary variable
+  mutate(is_solved = if_else(disposition == "Closed by arrest", 1, 0)) %>%
+  # Ensure victim_age is numeric
+  mutate(victim_age = as.numeric(victim_age))
+
+homicide_clean
+```
+
+#### Logistic regression analysis for Baltimore
+```{r}
+# Step 1: Filter data for Baltimore, MD
+baltimore_data <- homicide_clean %>%
+  filter(city_state == "Baltimore, MD")
+
+# Step 2: Prepare data (ensure factors and binary outcome)
+baltimore_data <- baltimore_data %>%
+  mutate(victim_sex = as.factor(victim_sex),
+         victim_race = as.factor(victim_race),
+         is_solved = factor(is_solved, levels = c(0, 1)))
+
+# Step 3: Fit logistic regression model
+model <- glm(is_solved ~ victim_age + victim_sex + victim_race, 
+             data = baltimore_data, family = binomial())
+
+# Step 4: Apply broom::tidy to the model object
+model_tidy <- broom::tidy(model)
+
+# Displaying the tidy model summary
+print(model_tidy)
+
+# Step 5: Calculate adjusted odds ratios 
+adjusted_or <- exp(coef(model)["victim_sexMale"])  # For Male vs Female comparison
+CI <- confint(model)  # Default confidence interval
+CI_adjusted_or <- exp(CI["victim_sexMale", ])
+
+# Displaying the adjusted odds ratio and its confidence interval
+adjusted_or
+CI_adjusted_or
+
+```
+
+The adjusted odds ratio of 0.426 suggests that, in Baltimore, MD, the odds of solving a homicide for male victims are 0.426 times the the odds of solving a homicide for female victims, when controlling for other factors. We are 95% confident that this true odds ratio lies between 0.324 and 0.558. The confidence interval reinforces this conclusion and indicates a statistically significant difference, as it does not include 1. 
+
+#### GLM analysis for each city
+```{r}
+# Step 1 & 2: Group by city and nest data
+nested_data <- homicide_clean %>%
+  group_by(city_state) %>%
+  nest()
+
+# Step 3: Fit logistic regression model and tidy with confidence intervals for each city
+nested_data <- nested_data %>%
+  mutate(model = map(data, ~glm(is_solved ~ victim_age + victim_sex + victim_race, 
+                                data = .x, family = binomial())),
+         tidied = map(model, ~tidy(.x, conf.int = TRUE)))
+
+# Step 4: Extract coefficients for `victim_sexMale`
+nested_data <- nested_data %>%
+  mutate(ORs = map(tidied, ~filter(.x, term == "victim_sexMale") %>%
+                     mutate(OR = exp(estimate),
+                            CI_lower = exp(conf.low),
+                            CI_upper = exp(conf.high))))
+
+# Step 5: Unnest and organize results
+GLM_results <- nested_data %>%
+  select(city_state, ORs) %>%
+  unnest(ORs) %>%
+  select(city_state, OR, CI_lower, CI_upper)
+
+GLM_results
+```
+
+#### Plot: GLM analysis for each city
+```{r}
+GLM_results <- GLM_results %>%
+  arrange(OR)
+
+GLM_plot <- ggplot(GLM_results, aes(x = reorder(city_state, OR), y = OR)) +
+  geom_point() +  
+  geom_errorbar(aes(ymin = CI_lower, ymax = CI_upper), width = 0.2) +  
+  coord_flip() +
+  labs(x = "Cities",
+       y = "Adjusted ORs with CIs") +
+  theme_minimal()
+
+GLM_plot
+```
+
+A noticeable trend in this plot is that most cities have ORs less than 1, suggesting that across these cities, homicides with male victims are generally less likely to be solved than those with female victims. Moreover, the CIs for the majority of cities cross the OR of 1, indicating that for many cities, the difference in the likelihood of solving homicides with male versus female victims is not statistically significant. Some cities have wide CIs, reflecting greater uncertainty in their estimates, while others have narrower CIs, indicating more precise estimates. 
+
+## Problem 2
+
+
+
+
