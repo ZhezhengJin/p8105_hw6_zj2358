@@ -11,6 +11,8 @@ library(knitr)
 library(janitor)
 library(readxl)
 library(broom)
+library(boot)
+library(modelr)
 
 opts_chunk$set(
 	echo = TRUE,
@@ -74,7 +76,7 @@ model <- glm(is_solved ~ victim_age + victim_sex + victim_race,
              data = baltimore_data, family = binomial())
 
 # Step 4: Apply broom::tidy to the model object
-model_tidy <- broom::tidy(model)
+model_tidy <- tidy(model)
 
 # Displaying the tidy model summary
 print(model_tidy)
@@ -141,6 +143,185 @@ A noticeable trend in this plot is that most cities have ORs less than 1, sugges
 
 ## Problem 2
 
+#### Weather data
+```{r}
+weather_df = 
+  rnoaa::meteo_pull_monitors(
+    c("USW00094728"),
+    var = c("PRCP", "TMIN", "TMAX"), 
+    date_min = "2022-01-01",
+    date_max = "2022-12-31") |>
+  mutate(
+    name = recode(id, USW00094728 = "CentralPark_NY"),
+    tmin = tmin / 10,
+    tmax = tmax / 10) |>
+  select(name, id, everything())
+```
 
+#### Bootstrap analysis for log_betas and r_squared
+```{r}
+fit0 <- lm(tmax ~ tmin + prcp, data = weather_df)
+set.seed(123)
+boot_sample = function(df) {
+  sample_frac(df, replace = TRUE)
+}
+
+boot_straps = 
+  data_frame(
+    strap_number = 1:5000,
+    strap_sample = rerun(5000, boot_sample(weather_df))
+  )
+
+bootstrap_results = 
+  boot_straps %>% 
+  mutate(
+    models = map(strap_sample, ~lm(tmax ~ tmin + prcp, data = .x) ),
+    results = map(models, tidy)) %>% 
+  select(-strap_sample, -models) %>% 
+  unnest(results) 
+
+log_betas <-  
+  bootstrap_results %>%
+  group_by(strap_number) %>%
+  summarise(log_betas = log(estimate[2] * estimate[3])) %>%
+  select(log_betas, strap_number)
+
+bootstrap_results2 <- 
+  boot_straps %>% 
+  mutate(
+    models = map(strap_sample, ~lm(tmax ~ tmin + prcp, data = .x) ),
+    results = map(models, glance)) %>% 
+  select(-strap_sample, -models) %>% 
+  unnest(results) 
+
+r_squared <- 
+  bootstrap_results2 %>%
+  select(r.squared, strap_number)
+```
+
+#### Fitting density plots of two estimates
+```{r}
+ggplot(r_squared, aes(x = r.squared)) + 
+  geom_density() +
+  labs(title = "Distribution of R-squared") +
+  theme_minimal()
+
+ggplot(log_betas, aes(x = log_betas)) + 
+  geom_density() +
+  labs(title = "Distribution of log(Beta1 * Beta2)") +
+  theme_minimal()
+
+r_squared_sd <-
+  r_squared %>%
+  summarise(r_squared_sd = sd(r.squared)) %>%
+  pull(r_squared_sd)
+
+r_squared_mean <-
+  r_squared %>%
+  summarise(r_squared_mean = mean(r.squared)) %>%
+  pull(r_squared_mean)
+
+log_betas_sd <- 
+  log_betas %>%
+  summarise(log_betas_sd = sd(as.numeric(log_betas),na.rm = TRUE)) %>%
+  pull(log_betas_sd)
+
+log_betas_mean <- 
+  log_betas %>% 
+  summarise(log_betas_mean = mean(as.numeric(log_betas), na.rm = TRUE)) %>%
+  pull(log_betas_mean)
+```
+
+The $\hat{r}^2$ distribution is approximately normal, centered around a mean of **`r r_squared_mean`** with a narrow spread (SD = **`r r_squared_sd`**), reflecting a consistent model fit across bootstrap samples. In contrast, the distribution for $log(\beta_{1} * \beta_{2})$ is left-skewed with a mean of **`r log_betas_mean`** and a wider spread (SD = **`r log_betas_sd`**), indicating a tendency for the product of coefficients to be less than one and a more variable interaction effect between the predictors across samples.
+
+#### Confidence intervals for  log(β^1∗β^2)
+```{r}
+CI_result <-
+  log_betas %>%
+  summarize(ci_lower = quantile(log_betas, 0.025, na.rm = TRUE),
+            ci_upper = quantile(log_betas, 0.975, na.rm = TRUE))
+
+CI_result_lower <- CI_result %>% pull(ci_lower)
+CI_result_upper <- CI_result %>% pull(ci_upper)
+```
+
+95% Confidence Interval of $log(\beta_{1} * \beta_{2})$: (**`r CI_result_lower`**, **`r CI_result_upper`**)
+
+#### Confidence intervals for r^2
+```{r}
+CI_result2 <-
+  r_squared %>%
+  summarize(ci_lower = quantile(r.squared, 0.025),
+            ci_upper = quantile(r.squared, 0.975)) 
+
+CI_result_lower2 <- CI_result2 %>% pull(ci_lower)
+CI_result_upper2 <- CI_result2 %>% pull(ci_upper)
+```
+
+95% Confidence Interval of $\hat{r}^2$ : (**`r CI_result_lower2`**, **`r CI_result_upper2`**)
+
+## Problem 3
+
+#### Data Import
+```{r}
+birthweight_data <- read_csv("./data_file/birthweight.csv")
+```
+
+#### Tidying and wrangling the data
+```{r}
+cleaned_birthweight_data <-
+  birthweight_data %>% 
+  clean_names() %>%
+  mutate(across(.cols = c(babysex, frace, malform, mrace), as.factor)) %>%
+  mutate(babysex = ifelse(babysex == "1", "male","female"),
+         malform = ifelse(malform == "0", "absent","present"),
+         frace = recode(frace, "1" = "White", "2" = "Black", "3" = "Asian", 
+                        "4" = "Puerto Rican", "8" = "Other", "9" = "Unknown"),
+         mrace = recode(mrace, "1" = "White", "2" = "Black", 
+                        "3" = "Asian", "4" = "Puerto Rican", "8" = "Other")
+         )
+```
+
+#### Checking Missing Values
+```{r}
+skimr::skim(cleaned_birthweight_data)
+```
+
+There is no missing data. The dimension of the birthweight data is `r nrow(birthweight_data)` x `r ncol(birthweight_data)`. The `r ncol(birthweight_data)` variables include: *`r names(birthweight_data)`.*
+
+#### # Fit the initial model and Check the model summary
+```{r}
+initial_model <- lm(bwt ~ ., data = birthweight_data)
+summary(initial_model)
+```
+
+After fitting the initial model, the coefficients for babysex, bhead, blength, delwt, fincome, gaweeks, momage, mrace, parity, and smoken are significant at the 0.05 level. The NAs for pnumlbw, pnumsga, and wtgain suggest that there are issues with these variables in the model, such as multicollinearity.
+
+Based on the provided coefficients and their p-values, I consider only the statistically significant predictors for fitting a simplified linear model for birthweight. 
+
+#### Proposing a Regression Model for Birthweight
+```{r}
+model_fit <- lm(bwt ~ babysex + bhead + blength + delwt + fincome + gaweeks + momage + mrace + parity + smoken, data = cleaned_birthweight_data)
+
+summary(model_fit) %>% 
+  tidy() %>%
+  select(term, estimate, p.value)
+
+summary(model_fit) %>% 
+  glance()
+```
+
+Given the variables, a plausible model might include factors that are known or suspected to influence birthweight. For instance, gestational age (`gaweeks`), mother's pre-pregnancy BMI (`ppbmi`), mother's age (`momage`), number of cigarettes smoked per day during pregnancy (`smoken`), and presence of malformations (`malform`) could be key predictors.
+
+#### Model Checking: Residuals Plot
+```{r}
+cleaned_birthweight_data %>%
+  add_predictions(model_fit) %>%
+  add_residuals(model_fit) %>%
+  ggplot(aes(x = pred, y = resid)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(x = "Fitted Values", y = "Residuals", title = "Residuals vs Fitted Plot for Birthweight Model")
+```
 
 
