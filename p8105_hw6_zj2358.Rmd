@@ -297,11 +297,11 @@ summary(initial_model)
 
 After fitting the initial model, the coefficients for babysex, bhead, blength, delwt, fincome, gaweeks, momage, mrace, parity, and smoken are significant at the 0.05 level. The NAs for pnumlbw, pnumsga, and wtgain suggest that there are issues with these variables in the model, such as multicollinearity.
 
-Based on the provided coefficients and their p-values, I consider only the statistically significant predictors for fitting a simplified linear model for birthweight. 
+Based on the provided coefficients and their p-values, I consider only the statistically significant continuous predictors for fitting a simplified linear model for birthweight. 
 
-#### Proposing a Regression Model for Birthweight
+#### Proposing the Regression Model for Birthweight
 ```{r}
-model_fit <- lm(bwt ~ babysex + bhead + blength + delwt + fincome + gaweeks + momage + mrace + parity + smoken, data = cleaned_birthweight_data)
+model_fit <- lm(bwt ~ bhead + blength + delwt + gaweeks + smoken, data = cleaned_birthweight_data)
 
 summary(model_fit) %>% 
   tidy() %>%
@@ -311,7 +311,7 @@ summary(model_fit) %>%
   glance()
 ```
 
-Given the variables, a plausible model might include factors that are known or suspected to influence birthweight. For instance, gestational age (`gaweeks`), mother's pre-pregnancy BMI (`ppbmi`), mother's age (`momage`), number of cigarettes smoked per day during pregnancy (`smoken`), and presence of malformations (`malform`) could be key predictors.
+Based on the statistical summary, the fitted linear regression model with significant continuous variables—baby's head circumference, length at birth, mother's weight at delivery, gestational age, and smoking during pregnancy—explains 69.6% of the variability in birthweight (R-squared = 0.696). All variables are highly significant with strong associations to birthweight. 
 
 #### Model Checking: Residuals Plot
 ```{r}
@@ -324,4 +324,55 @@ cleaned_birthweight_data %>%
   labs(x = "Fitted Values", y = "Residuals", title = "Residuals vs Fitted Plot for Birthweight Model")
 ```
 
+The "Residuals vs Fitted Plot" for the birthweight model indicates that the residuals are mostly randomly dispersed around the horizontal line at zero, which is good for homoscedasticity and linearity assumptions. However, the presence of a few outliers, particularly for higher fitted values, suggests that there might be some unusually large or small birthweights that the model does not predict well. There's no clear pattern indicating non-linearity or heteroscedasticity.
 
+#### Computing rmse of models through cross validaiton
+```{r}
+set.seed(77)
+
+cv_dataset <-
+  cleaned_birthweight_data %>% 
+  crossv_mc(n = 100,test = 0.2)
+  
+
+cv_df <- 
+  cv_dataset %>%
+   mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble))
+
+cv_df <-
+  cv_df %>%
+    mutate(
+    my_model  = map(train, ~lm(bwt ~ bhead + blength + delwt + gaweeks + smoken, data = .x)),
+    model_length_gaweeks = map(train, ~lm(bwt ~ blength + gaweeks, data = .x)),
+    model_interactions  = map(train, ~lm(bwt ~ (bhead + blength + babysex)^3, data = .x))
+    ) %>%
+   mutate(
+    rmse_my_model = map2_dbl(my_model, test, ~rmse(model = .x, data = .y)),
+    rmse_length_gaweeks = map2_dbl(model_length_gaweeks, test, ~rmse(model = .x, data = .y)),
+    rmse_interactions = map2_dbl(model_interactions, test, ~rmse(model = .x, data = .y))
+   )
+```
+
+#### Fitting the distribution of rmse of the models
+```{r}
+cv_df %>% 
+  select(starts_with("rmse")) %>% 
+  pivot_longer(
+    everything(),
+    names_to = "model", 
+    values_to = "rmse",
+    names_prefix = "rmse_") %>% 
+  mutate(model = fct_inorder(model)) %>% 
+  ggplot(aes(x = model, y = rmse)) + 
+  geom_boxplot() +
+  labs(title = 
+  "Prediction Error Distributions across Models", 
+       x = "Models", y = "Root Mean Square Error")  +
+  scale_x_discrete(
+    labels = c("My Model", "Length + Gestational Age", "Interactions Model")) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+```
+
+Here, we are comparing models with respect to the cross-validated prediction error. By and large, my model seems to have the lowest prediction error (rmse) and hence is potentially the best model, followed by the Interactions Model and the Length + Gestational Age Model when comparing the medians (the line in the middle of the box) and the overall distribution of the box plots.
