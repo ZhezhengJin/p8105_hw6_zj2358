@@ -287,11 +287,11 @@ cleaned_birthweight_data <-
 skimr::skim(cleaned_birthweight_data)
 ```
 
-There is no missing data. The dimension of the birthweight data is `r nrow(birthweight_data)` x `r ncol(birthweight_data)`. The `r ncol(birthweight_data)` variables include: *`r names(birthweight_data)`.*
+There is no missing data. The dimension of the birthweight data is `r nrow(cleaned_birthweight_data)` x `r ncol(cleaned_birthweight_data)`. The `r ncol(cleaned_birthweight_data)` variables include: *`r names(cleaned_birthweight_data)`.*
 
 #### # Fit the initial model and Check the model summary
 ```{r}
-initial_model <- lm(bwt ~ ., data = birthweight_data)
+initial_model <- lm(bwt ~ ., data = cleaned_birthweight_data)
 summary(initial_model)
 ```
 
